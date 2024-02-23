@@ -19,6 +19,7 @@ type CacheObj interface {
 }
 
 type ComCacheObj struct {
+	N    string
 	scmd *redis.StringCmd
 }
 
