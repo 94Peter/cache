@@ -41,21 +41,6 @@ func (s *ComCacheObj) HasError() bool {
 	return s.scmd.Err() != nil
 }
 
-func (t *ComCacheObj) Encode(i interface{}) ([]byte, error) {
-	buf := bytes.Buffer{}
-	enc := gob.NewEncoder(&buf)
-	err := enc.Encode(i)
-	if err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func (t *ComCacheObj) Decode(data []byte, i interface{}) error {
-	dec := gob.NewDecoder(bytes.NewReader(data))
-	return dec.Decode(i)
-}
-
 func (t *ComCacheObj) DecodePipe(obj CacheObj) error {
 	cmd, err := t.GetStringCmd()
 	if err != nil {
@@ -66,6 +51,21 @@ func (t *ComCacheObj) DecodePipe(obj CacheObj) error {
 		return err
 	}
 	return obj.Decode([]byte(js))
+}
+
+func Encode(i interface{}) ([]byte, error) {
+	buf := bytes.Buffer{}
+	enc := gob.NewEncoder(&buf)
+	err := enc.Encode(i)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func Decode(data []byte, i interface{}) error {
+	dec := gob.NewDecoder(bytes.NewReader(data))
+	return dec.Decode(i)
 }
 
 type CacheMapObj interface {

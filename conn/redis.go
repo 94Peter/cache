@@ -69,6 +69,7 @@ type RedisClient interface {
 type CachePipel interface {
 	Get(key string) *redis.StringCmd
 	Exec() ([]redis.Cmder, error)
+	Set(key string, value interface{}, expiration time.Duration) *redis.StatusCmd
 }
 
 type redisV8CltImpl struct {
@@ -169,4 +170,8 @@ func (p *myPipel) Get(key string) *redis.StringCmd {
 
 func (p *myPipel) Exec() ([]redis.Cmder, error) {
 	return p.redisPiple.Exec(p.ctx)
+}
+
+func (p *myPipel) Set(key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
+	return p.redisPiple.Set(p.ctx, key, value, expiration)
 }
