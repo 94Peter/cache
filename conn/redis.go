@@ -55,6 +55,7 @@ type RedisClient interface {
 	Get(k string) ([]byte, error)
 	Set(k string, v interface{}, exp time.Duration) (string, error)
 	Del(k string) (int64, error)
+	DelKeys(pattern string) (int64, error)
 	LPush(k string, v interface{}) (int64, error)
 	RPop(k string) ([]byte, error)
 	HGet(key string, field string) string
@@ -119,6 +120,14 @@ func (rci *redisV8CltImpl) Set(k string, v interface{}, exp time.Duration) (stri
 
 func (rci *redisV8CltImpl) Del(k string) (int64, error) {
 	return rci.clt.Del(rci.ctx, k).Result()
+}
+
+func (rci *redisV8CltImpl) DelKeys(pattern string) (int64, error) {
+	keys, err := rci.Keys(pattern)
+	if err != nil {
+		return 0, err
+	}
+	return rci.clt.Del(rci.ctx, keys...).Result()
 }
 
 func (rci *redisV8CltImpl) LPush(k string, v interface{}) (int64, error) {
