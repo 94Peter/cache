@@ -127,6 +127,9 @@ func (rci *redisV8CltImpl) DelKeys(pattern string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if len(keys) == 0 {
+		return 0, nil
+	}
 	return rci.clt.Del(rci.ctx, keys...).Result()
 }
 
