@@ -22,16 +22,16 @@ type CacheObj interface {
 }
 
 type ComCacheObj struct {
-	d    time.Duration
+	E    time.Duration
 	scmd *redis.StringCmd
 }
 
 func (s *ComCacheObj) SetExpiredTime(d time.Duration) {
-	s.d = d
+	s.E = d
 }
 
 func (s *ComCacheObj) GetExpiredTime() time.Duration {
-	return s.d
+	return s.E
 }
 
 func (s *ComCacheObj) SetStringCmd(sc *redis.StringCmd) {
