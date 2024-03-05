@@ -45,6 +45,12 @@ func (c *redisCache) GetObj(key string, i CacheObj) error {
 	if err != nil {
 		return err
 	}
+
+	expired, err := c.TTL(key)
+	if err != nil {
+		return err
+	}
+	i.SetExpiredTime(expired)
 	err = i.Decode(data)
 	return err
 }
@@ -65,6 +71,10 @@ func (c *redisCache) GetObjs(keys []string, d CacheObj) (objs []CacheObj, err er
 		newDoc = newValue.Interface().(CacheObj)
 		newDoc.SetStringCmd(pipe.Get(k))
 		sliceList = append(sliceList, newDoc)
+		expired, err := c.TTL(k)
+		if err == nil {
+			newDoc.SetExpiredTime(expired)
+		}
 	}
 	pipe.Exec()
 	for _, s := range sliceList {
@@ -98,6 +108,11 @@ func (c *redisCache) SaveObjHash(i CacheMapObj, exp time.Duration) error {
 }
 
 func (c *redisCache) GetObjHash(key string, i CacheMapObj) error {
+	expired, err := c.RedisClient.TTL(key)
+	if err != nil {
+		return err
+	}
+	i.SetExpiredTime(expired)
 	data := c.RedisClient.HGetAll(key)
 	return i.DecodeMap(data)
 }

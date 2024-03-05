@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"errors"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -16,11 +17,21 @@ type CacheObj interface {
 	DecodePipe() error
 	GetError() error
 	HasError() bool
+	SetExpiredTime(d time.Duration)
+	GetExpiredTime() time.Duration
 }
 
 type ComCacheObj struct {
-	N    string
+	d    time.Duration
 	scmd *redis.StringCmd
+}
+
+func (s *ComCacheObj) SetExpiredTime(d time.Duration) {
+	s.d = d
+}
+
+func (s *ComCacheObj) GetExpiredTime() time.Duration {
+	return s.d
 }
 
 func (s *ComCacheObj) SetStringCmd(sc *redis.StringCmd) {
@@ -73,4 +84,6 @@ type CacheMapObj interface {
 	GetKey() string
 	EncodeMap() (map[string]string, error)
 	DecodeMap(map[string]string) error
+	SetExpiredTime(d time.Duration)
+	GetExpiredTime() time.Duration
 }

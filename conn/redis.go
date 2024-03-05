@@ -65,6 +65,7 @@ type RedisClient interface {
 	Expired(key string, d time.Duration) (bool, error)
 	NewPiple() CachePipel
 	Keys(pattern string) ([]string, error)
+	TTL(key string) (time.Duration, error)
 	MGet(keys []string) ([]interface{}, error)
 }
 
@@ -167,6 +168,14 @@ func (rci *redisV8CltImpl) HSet(key string, values map[string]string) error {
 
 func (rci *redisV8CltImpl) MGet(keys []string) ([]interface{}, error) {
 	return rci.clt.MGet(rci.ctx, keys...).Result()
+}
+
+func (p *redisV8CltImpl) TTL(key string) (time.Duration, error) {
+	ttlcmd := p.clt.TTL(p.ctx, key)
+	if err := ttlcmd.Err(); err != nil {
+		return 0, err
+	}
+	return ttlcmd.Val(), nil
 }
 
 func (rci *redisV8CltImpl) NewPiple() CachePipel {
