@@ -21,18 +21,13 @@ type RedisConf struct {
 	DbMap map[string]int `yaml:"dbMap"`
 }
 
-func (rc *RedisConf) getDB(dbname string) int {
-	return rc.DbMap[dbname]
-}
-
 func (rc *RedisConf) NewRedisDbConn(ctx context.Context, name string) (RedisClient, error) {
 	//const connTimeout = time.Second * 5
 	db, ok := rc.DbMap[name]
 	if !ok {
 		return nil, errors.New("db not found: " + name)
 	}
-	var r RedisClient
-	r = &redisV8CltImpl{
+	r := &redisV8CltImpl{
 		clt: redis.NewClient(&redis.Options{
 			Addr: rc.Host,
 			// Password:     r.Pwd, // no password set
@@ -54,7 +49,7 @@ type RedisClient interface {
 	CountKeys() (int, error)
 	Get(k string) ([]byte, error)
 	Set(k string, v interface{}, exp time.Duration) (string, error)
-	Del(k string) (int64, error)
+	Del(k ...string) (int64, error)
 	DelKeys(pattern string) (int64, error)
 	LPush(k string, v interface{}) (int64, error)
 	RPop(k string) ([]byte, error)
@@ -120,8 +115,8 @@ func (rci *redisV8CltImpl) Set(k string, v interface{}, exp time.Duration) (stri
 	return rci.clt.Set(rci.ctx, k, v, exp).Result()
 }
 
-func (rci *redisV8CltImpl) Del(k string) (int64, error) {
-	return rci.clt.Del(rci.ctx, k).Result()
+func (rci *redisV8CltImpl) Del(k ...string) (int64, error) {
+	return rci.clt.Del(rci.ctx, k...).Result()
 }
 
 func (rci *redisV8CltImpl) DelKeys(pattern string) (int64, error) {
