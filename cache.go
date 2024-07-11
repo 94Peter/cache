@@ -10,6 +10,7 @@ import (
 )
 
 type Cache interface {
+	SaveObjs(exp time.Duration, docs ...CacheObj) error
 	SaveObj(i CacheObj, exp time.Duration) error
 	GetObj(key string, i CacheObj) error
 	GetObjs(keys []string, d CacheObj) (objs []CacheObj, err error)
@@ -25,6 +26,19 @@ func NewRedisCache(clt conn.RedisClient) Cache {
 
 type redisCache struct {
 	conn.RedisClient
+}
+
+func (c *redisCache) SaveObjs(exp time.Duration, docs ...CacheObj) error {
+	pipe := c.NewPiple()
+	for _, d := range docs {
+		b, err := d.Encode()
+		if err != nil {
+			return err
+		}
+		pipe.Set(d.GetKey(), b, exp)
+	}
+	_, err := pipe.Exec()
+	return err
 }
 
 func (c *redisCache) SaveObj(i CacheObj, exp time.Duration) error {
