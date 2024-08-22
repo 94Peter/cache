@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/go-session/session/v3"
 )
 
 type RedisDI interface {
 	NewRedisDbConn(ctx context.Context, name string) (RedisClient, error)
+	NewManagerStore(ctx context.Context, name string) (session.ManagerStore, error)
 }
 
 type RedisConf struct {
