@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -13,7 +14,7 @@ import (
 )
 
 type RedisDI interface {
-	NewRedisDbConn(ctx context.Context, name string) (RedisClient, error)
+	NewRedisDbConn(name string) (RedisClient, error)
 	NewManagerStore(ctx context.Context, name string) (session.ManagerStore, error)
 }
 
@@ -21,25 +22,46 @@ type RedisConf struct {
 	Host  string         `yaml:"host"`
 	Pwd   string         `yaml:"pass"`
 	DbMap map[string]int `yaml:"dbMap"`
+
+	sync.Mutex
+	connMap map[string]*redis.Client
 }
 
-func (rc *RedisConf) NewRedisDbConn(ctx context.Context, name string) (RedisClient, error) {
-	//const connTimeout = time.Second * 5
+func (rc *RedisConf) NewRedisDbConn(name string) (RedisClient, error) {
+	rc.Lock()
+	defer rc.Unlock()
+	if rc.connMap == nil {
+		rc.connMap = make(map[string]*redis.Client)
+	}
+	var redisclt *redis.Client
+	var ok bool
 	db, ok := rc.DbMap[name]
 	if !ok {
 		return nil, errors.New("db not found: " + name)
 	}
-	r := &redisV8CltImpl{
-		clt: redis.NewClient(&redis.Options{
+	if redisclt, ok = rc.connMap[name]; !ok {
+		redisclt = redis.NewClient(&redis.Options{
 			Addr: rc.Host,
 			// Password:     r.Pwd, // no password set
-			DB: db, // use default DB
-		}),
-		ctx: ctx,
-		db:  db,
+			DB:           db, // use default DB
+			PoolSize:     10,
+			MinIdleConns: 3,
+			DialTimeout:  5 * time.Second,
+			ReadTimeout:  3 * time.Second,
+			WriteTimeout: 3 * time.Second,
+			PoolTimeout:  4 * time.Second,
+			IdleTimeout:  5 * time.Minute,
+		})
+		rc.connMap[name] = redisclt
 	}
 
-	if r.Ping() != "PONG" {
+	r := &redisV8CltImpl{
+		clt:   redisclt,
+		retry: 3,
+		db:    db,
+	}
+
+	if r.Ping(context.Background()) != "PONG" {
 		return nil, errors.New("redis connect error")
 	}
 	return r, nil
@@ -47,23 +69,23 @@ func (rc *RedisConf) NewRedisDbConn(ctx context.Context, name string) (RedisClie
 
 type RedisClient interface {
 	Close() error
-	Ping() string
-	CountKeys() (int, error)
-	Get(k string) ([]byte, error)
-	Set(k string, v interface{}, exp time.Duration) (string, error)
-	Del(k ...string) (int64, error)
-	DelKeys(pattern string) (int64, error)
-	LPush(k string, v interface{}) (int64, error)
-	RPop(k string) ([]byte, error)
-	HGet(key string, field string) string
-	HSet(key string, values map[string]string) error
-	HGetAll(key string) map[string]string
-	Exists(key string) bool
-	Expired(key string, d time.Duration) (bool, error)
-	NewPiple() CachePipel
-	Keys(pattern string) ([]string, error)
-	TTL(key string) (time.Duration, error)
-	MGet(keys []string) ([]interface{}, error)
+	Ping(ctx context.Context) string
+	CountKeys(ctx context.Context) (int, error)
+	Get(ctx context.Context, k string) ([]byte, error)
+	Set(ctx context.Context, k string, v interface{}, exp time.Duration) (string, error)
+	Del(ctx context.Context, k ...string) (int64, error)
+	DelKeys(ctx context.Context, pattern string) (int64, error)
+	LPush(ctx context.Context, k string, v interface{}) (int64, error)
+	RPop(ctx context.Context, k string) ([]byte, error)
+	HGet(ctx context.Context, key string, field string) string
+	HSet(ctx context.Context, key string, values map[string]string) error
+	HGetAll(ctx context.Context, key string) map[string]string
+	Exists(ctx context.Context, key string) bool
+	Expired(ctx context.Context, key string, d time.Duration) (bool, error)
+	NewPiple(ctx context.Context) CachePipel
+	Keys(ctx context.Context, pattern string) ([]string, error)
+	TTL(ctx context.Context, key string) (time.Duration, error)
+	MGet(ctx context.Context, keys []string) ([]interface{}, error)
 }
 
 type CachePipel interface {
@@ -73,25 +95,60 @@ type CachePipel interface {
 }
 
 type redisV8CltImpl struct {
-	clt *redis.Client
-	ctx context.Context
-	db  int
+	clt   *redis.Client
+	retry int
+	db    int
 }
 
-func (rci *redisV8CltImpl) Keys(pattern string) ([]string, error) {
-	return rci.clt.Keys(rci.ctx, pattern).Result()
+func (rci *redisV8CltImpl) Keys(ctx context.Context, pattern string) ([]string, error) {
+	var err error
+	var keys []string
+	for i := 0; i < rci.retry; i++ {
+		keys, err = rci.clt.Keys(ctx, pattern).Result()
+		if err == nil {
+			return keys, nil
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return nil, errors.New("redis get keys error: " + err.Error())
 }
 
-func (rci *redisV8CltImpl) Get(key string) ([]byte, error) {
-	return rci.clt.Get(rci.ctx, key).Bytes()
+func (rci *redisV8CltImpl) Get(ctx context.Context, key string) ([]byte, error) {
+	var result []byte
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		result, err = rci.clt.Get(ctx, key).Bytes()
+		if err == nil {
+			return result, nil
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return nil, errors.New("redis get error: " + err.Error())
 }
 
-func (rci *redisV8CltImpl) Expired(key string, d time.Duration) (bool, error) {
-	return rci.clt.Expire(rci.ctx, key, d).Result()
+func (rci *redisV8CltImpl) Expired(ctx context.Context, key string, d time.Duration) (bool, error) {
+	var result bool
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		result, err = rci.clt.Expire(ctx, key, d).Result()
+		if err == nil {
+			return result, nil
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return false, errors.New("redis expired error: " + err.Error())
 }
 
-func (rci *redisV8CltImpl) CountKeys() (int, error) {
-	r := rci.clt.Info(rci.ctx, "keyspace").String()
+func (rci *redisV8CltImpl) CountKeys(ctx context.Context) (int, error) {
+	var r string
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		r, err = rci.clt.Info(ctx, "keyspace").Result()
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
 	k := fmt.Sprintf("db%d:keys=", rci.db)
 	i := strings.Index(r, k)
 	l := len(r)
@@ -106,53 +163,125 @@ func (rci *redisV8CltImpl) CountKeys() (int, error) {
 }
 
 func (rci *redisV8CltImpl) Close() error {
+	if rci.clt == nil {
+		return nil
+	}
 	return rci.clt.Close()
 }
 
-func (rci *redisV8CltImpl) Ping() string {
-	return rci.clt.Ping(rci.ctx).Val()
+func (rci *redisV8CltImpl) Ping(ctx context.Context) string {
+	return rci.clt.Ping(ctx).Val()
 }
 
-func (rci *redisV8CltImpl) Set(k string, v interface{}, exp time.Duration) (string, error) {
-	return rci.clt.Set(rci.ctx, k, v, exp).Result()
+func (rci *redisV8CltImpl) Set(ctx context.Context, k string, v interface{}, exp time.Duration) (string, error) {
+	var result string
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		result, err = rci.clt.Set(ctx, k, v, exp).Result()
+		if err == nil {
+			return result, nil
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return "", errors.New("redis set error: " + err.Error())
 }
 
-func (rci *redisV8CltImpl) Del(k ...string) (int64, error) {
-	return rci.clt.Del(rci.ctx, k...).Result()
+func (rci *redisV8CltImpl) Del(ctx context.Context, k ...string) (int64, error) {
+	var result int64
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		result, err = rci.clt.Del(ctx, k...).Result()
+		if err == nil {
+			return result, nil
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return 0, errors.New("redis del error: " + err.Error())
 }
 
-func (rci *redisV8CltImpl) DelKeys(pattern string) (int64, error) {
-	keys, err := rci.Keys(pattern)
-	if err != nil {
-		return 0, err
+func (rci *redisV8CltImpl) DelKeys(ctx context.Context, pattern string) (int64, error) {
+	var keys []string
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		keys, err = rci.clt.Keys(ctx, pattern).Result()
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Microsecond * 200)
 	}
 	if len(keys) == 0 {
 		return 0, nil
 	}
-	return rci.clt.Del(rci.ctx, keys...).Result()
+	return rci.clt.Del(ctx, keys...).Result()
 }
 
-func (rci *redisV8CltImpl) LPush(k string, v interface{}) (int64, error) {
-	return rci.clt.LPush(rci.ctx, k, v).Result()
+func (rci *redisV8CltImpl) LPush(ctx context.Context, k string, v interface{}) (int64, error) {
+	var result int64
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		result, err = rci.clt.LPush(ctx, k, v).Result()
+		if err == nil {
+			return result, nil
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return 0, errors.New("redis lpush error: " + err.Error())
 }
 
-func (rci *redisV8CltImpl) RPop(k string) ([]byte, error) {
-	return rci.clt.RPop(rci.ctx, k).Bytes()
+func (rci *redisV8CltImpl) RPop(ctx context.Context, k string) ([]byte, error) {
+	var result []byte
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		result, err = rci.clt.RPop(ctx, k).Bytes()
+		if err == nil {
+			return result, nil
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return nil, errors.New("redis rpop error: " + err.Error())
 }
 
-func (rci *redisV8CltImpl) Exists(key string) bool {
-	return rci.clt.Exists(rci.ctx, key).Val() == 1
+func (rci *redisV8CltImpl) Exists(ctx context.Context, key string) bool {
+	var result int64
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		result, err = rci.clt.Exists(ctx, key).Result()
+		if err == nil {
+			return result == 1
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return false
 }
 
-func (rci *redisV8CltImpl) HGetAll(key string) map[string]string {
-	return rci.clt.HGetAll(rci.ctx, key).Val()
+func (rci *redisV8CltImpl) HGetAll(ctx context.Context, key string) map[string]string {
+	var result map[string]string
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		result, err = rci.clt.HGetAll(ctx, key).Result()
+		if err == nil {
+			return result
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return map[string]string{}
 }
 
-func (rci *redisV8CltImpl) HGet(key string, field string) string {
-	return rci.clt.HGet(rci.ctx, key, field).Val()
+func (rci *redisV8CltImpl) HGet(ctx context.Context, key string, field string) string {
+	var result string
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		result, err = rci.clt.HGet(ctx, key, field).Result()
+		if err == nil {
+			return result
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return ""
 }
 
-func (rci *redisV8CltImpl) HSet(key string, values map[string]string) error {
+func (rci *redisV8CltImpl) HSet(ctx context.Context, key string, values map[string]string) error {
+	var err error
 	vals := make([]any, len(values)*2)
 	i := 0
 	for k, v := range values {
@@ -160,31 +289,52 @@ func (rci *redisV8CltImpl) HSet(key string, values map[string]string) error {
 		vals[i+1] = v
 		i += 2
 	}
-	return rci.clt.HSet(rci.ctx, key, vals...).Err()
-}
-
-func (rci *redisV8CltImpl) MGet(keys []string) ([]interface{}, error) {
-	return rci.clt.MGet(rci.ctx, keys...).Result()
-}
-
-func (p *redisV8CltImpl) TTL(key string) (time.Duration, error) {
-	ttlcmd := p.clt.TTL(p.ctx, key)
-	if err := ttlcmd.Err(); err != nil {
-		return 0, err
+	for i := 0; i < rci.retry; i++ {
+		err = rci.clt.HSet(ctx, key, vals...).Err()
+		if err == nil {
+			return nil
+		}
+		time.Sleep(time.Microsecond * 200)
 	}
-	return ttlcmd.Val(), nil
+	return err
 }
 
-func (rci *redisV8CltImpl) NewPiple() CachePipel {
+func (rci *redisV8CltImpl) MGet(ctx context.Context, keys []string) ([]interface{}, error) {
+	var result []any
+	var err error
+	for i := 0; i < rci.retry; i++ {
+		result, err = rci.clt.MGet(ctx, keys...).Result()
+		if err == nil {
+			return result, nil
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return nil, errors.New("redis mget error: " + err.Error())
+}
+
+func (p *redisV8CltImpl) TTL(ctx context.Context, key string) (time.Duration, error) {
+	var result time.Duration
+	var err error
+	for i := 0; i < p.retry; i++ {
+		result, err = p.clt.TTL(ctx, key).Result()
+		if err == nil {
+			return result, nil
+		}
+		time.Sleep(time.Microsecond * 200)
+	}
+	return 0, errors.New("redis ttl error: " + err.Error())
+}
+
+func (rci *redisV8CltImpl) NewPiple(ctx context.Context) CachePipel {
 	return &myPipel{
 		redisPiple: rci.clt.Pipeline(),
-		ctx:        rci.ctx,
+		ctx:        ctx,
 	}
 }
 
 type myPipel struct {
-	ctx        context.Context
 	redisPiple redis.Pipeliner
+	ctx        context.Context
 }
 
 func (p *myPipel) Get(key string) *redis.StringCmd {
